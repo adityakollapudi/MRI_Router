@@ -1,7 +1,7 @@
 """Modern Cascade GUI Window for Brain MRI Diagnosis:
-Stage 1: Dementia Category & Severity Prediction (EfficientNetV2-S).
-Stage 2: Reflex Brain Tumor Detection (CNN) - triggered ONLY if Stage 1 is Normal (Non Demented).
-         If Dementia is detected, Brain Tumor screening is bypassed as per protocol.
+Stage 1: Brain Tumor Screening (Custom CNN with Multi-Layer Grad-CAM).
+Stage 2: Reflex Dementia Assessment (EfficientNetV2-S) - triggered ONLY if Stage 1 is Normal (No Tumor).
+         If a Brain Tumor is detected, Dementia assessment is bypassed as per cascade protocol.
 
 Thread-safe architecture:
 - Non-blocking background inference worker with queue.Queue communication.
@@ -32,22 +32,23 @@ from src.tumor_detector import BrainTumorClassifier, find_tumor_model_path
 class CascadeMRIApp(tk.Tk):
     def __init__(self, initial_image=None, checkpoint=None):
         super().__init__()
-        self.title("Cascade Brain MRI Diagnostic System (Dementia & Reflex Tumor Screening)")
+        self.title("Cascade Brain MRI Diagnostic System (Tumor Screening & Reflex Dementia Assessment)")
         self.geometry("1060x980")
         self.minsize(920, 780)
         self.configure(bg="#0f172a")
 
         self.checkpoint_path = Path(checkpoint) if checkpoint else ROOT / "checkpoints" / "best_model.pth"
-        self.predictor = None
         self.tumor_detector = None
+        self.predictor = None
         self.current_image_path = initial_image
         self.img_input_tk = None
         self.img_gradcam_tk = None
         self.msg_queue = queue.Queue()
 
-        self.active_dementia_gradcam = None
         self.active_tumor_gradcam = None
-        self.current_shown_gradcam = "dementia"
+        self.active_tumor_panel = None
+        self.active_dementia_gradcam = None
+        self.current_shown_gradcam = "tumor"
 
         self._init_styles()
         self._build_ui()
@@ -123,7 +124,7 @@ class CascadeMRIApp(tk.Tk):
         tk.Label(heading_frame, text="Cascade Brain MRI Diagnostic Analysis",
                  font=("Segoe UI", 20, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor="w")
         tk.Label(heading_frame,
-                 text="Workflow: Stage 1 Dementia Assessment  ➔  If Normal, reflex Stage 2 Brain Tumor Screening (Bypassed if Dementia Detected)",
+                 text="Workflow: Stage 1 Brain Tumor Screening  ➔  If Normal, reflex Stage 2 Dementia Assessment (Bypassed if Tumor Detected)",
                  font=("Segoe UI", 10), fg="#38bdf8", bg="#0f172a").pack(anchor="w", pady=(2, 6))
 
         # --- OVERALL CONSOLIDATED DIAGNOSIS BANNER ---
@@ -137,71 +138,78 @@ class CascadeMRIApp(tk.Tk):
                                     fg="#cbd5e1", bg="#1e293b")
         self.lbl_overall.pack(side="left")
 
-        # --- 2 STAGES GRID (STAGE 1: DEMENTIA & STAGE 2: BRAIN TUMOR) ---
+        # --- 2 STAGES GRID (STAGE 1: BRAIN TUMOR & STAGE 2: DEMENTIA) ---
         stages_container = tk.Frame(self.scrollable_frame, bg="#0f172a")
         stages_container.pack(fill="x", pady=4)
 
-        # Card 1: Stage 1 Dementia
+        # Card 1: Stage 1 Brain Tumor Screening
         self.stage1_card = tk.Frame(stages_container, bg="#1e293b", padx=16, pady=12,
                                     highlightthickness=1, highlightbackground="#334155")
         self.stage1_card.pack(side="left", fill="both", expand=True, padx=(0, 6))
 
-        tk.Label(self.stage1_card, text="STAGE 1: DEMENTIA ASSESSMENT", font=("Segoe UI", 11, "bold"),
+        tk.Label(self.stage1_card, text="STAGE 1: BRAIN TUMOR SCREENING", font=("Segoe UI", 11, "bold"),
                  fg="#38bdf8", bg="#1e293b").pack(anchor="w")
-        tk.Label(self.stage1_card, text="Primary Classifier (EfficientNetV2-S)", font=("Segoe UI", 8),
+        tk.Label(self.stage1_card, text="Primary Screener (Custom 5-Layer CNN with Multi-Layer Grad-CAM)", font=("Segoe UI", 8),
                  fg="#64748b", bg="#1e293b").pack(anchor="w", pady=(0, 6))
-
-        # Disease line
-        row_d = tk.Frame(self.stage1_card, bg="#1e293b")
-        row_d.pack(fill="x", pady=2)
-        tk.Label(row_d, text="Category:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
-        self.lbl_disease = tk.Label(row_d, text="--", font=("Segoe UI", 13, "bold"), fg="#f8fafc", bg="#1e293b")
-        self.lbl_disease.pack(side="left")
-
-        # Confidence line
-        row_c = tk.Frame(self.stage1_card, bg="#1e293b")
-        row_c.pack(fill="x", pady=2)
-        tk.Label(row_c, text="Confidence:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
-        self.lbl_conf = tk.Label(row_c, text="--%", font=("Segoe UI", 11, "bold"), fg="#fbbf24", bg="#1e293b")
-        self.lbl_conf.pack(side="left")
-
-        # Dementia Status line
-        row_s = tk.Frame(self.stage1_card, bg="#1e293b")
-        row_s.pack(fill="x", pady=4)
-        tk.Label(row_s, text="Finding:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
-        self.lbl_status = tk.Label(row_s, text="--", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", padx=8, pady=2)
-        self.lbl_status.pack(side="left")
-
-        # Card 2: Stage 2 Brain Tumor Reflex Screening
-        self.stage2_card = tk.Frame(stages_container, bg="#1e293b", padx=16, pady=12,
-                                    highlightthickness=1, highlightbackground="#334155")
-        self.stage2_card.pack(side="right", fill="both", expand=True, padx=(6, 0))
-
-        tk.Label(self.stage2_card, text="STAGE 2: REFLEX BRAIN TUMOR CHECK", font=("Segoe UI", 11, "bold"),
-                 fg="#a855f7", bg="#1e293b").pack(anchor="w")
-        tk.Label(self.stage2_card, text="Secondary Screener (Activated ONLY if Dementia is Normal)", font=("Segoe UI", 8),
-                 fg="#64748b", bg="#1e293b").pack(anchor="w", pady=(0, 6))
-
-        # Tumor trigger status line
-        row_t_state = tk.Frame(self.stage2_card, bg="#1e293b")
-        row_t_state.pack(fill="x", pady=2)
-        tk.Label(row_t_state, text="Trigger Status:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
-        self.lbl_tumor_trigger = tk.Label(row_t_state, text="Standby", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", padx=6, pady=1)
-        self.lbl_tumor_trigger.pack(side="left")
 
         # Tumor Result line
-        row_t_res = tk.Frame(self.stage2_card, bg="#1e293b")
+        row_t_res = tk.Frame(self.stage1_card, bg="#1e293b")
         row_t_res.pack(fill="x", pady=2)
         tk.Label(row_t_res, text="Tumor Result:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
         self.lbl_tumor_res = tk.Label(row_t_res, text="--", font=("Segoe UI", 12, "bold"), fg="#f8fafc", bg="#1e293b")
         self.lbl_tumor_res.pack(side="left")
 
         # Tumor Probability line
-        row_t_prob = tk.Frame(self.stage2_card, bg="#1e293b")
+        row_t_prob = tk.Frame(self.stage1_card, bg="#1e293b")
         row_t_prob.pack(fill="x", pady=2)
         tk.Label(row_t_prob, text="Probability:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
         self.lbl_tumor_prob = tk.Label(row_t_prob, text="--%", font=("Segoe UI", 11, "bold"), fg="#fbbf24", bg="#1e293b")
         self.lbl_tumor_prob.pack(side="left")
+
+        # Tumor Finding / Status line
+        row_t_stat = tk.Frame(self.stage1_card, bg="#1e293b")
+        row_t_stat.pack(fill="x", pady=4)
+        tk.Label(row_t_stat, text="Finding:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
+        self.lbl_tumor_status = tk.Label(row_t_stat, text="--", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", padx=8, pady=2)
+        self.lbl_tumor_status.pack(side="left")
+
+        # Card 2: Stage 2 Reflex Dementia Assessment
+        self.stage2_card = tk.Frame(stages_container, bg="#1e293b", padx=16, pady=12,
+                                    highlightthickness=1, highlightbackground="#334155")
+        self.stage2_card.pack(side="right", fill="both", expand=True, padx=(6, 0))
+
+        tk.Label(self.stage2_card, text="STAGE 2: REFLEX DEMENTIA ASSESSMENT", font=("Segoe UI", 11, "bold"),
+                 fg="#a855f7", bg="#1e293b").pack(anchor="w")
+        tk.Label(self.stage2_card, text="Secondary Screener (Activated ONLY if Brain Tumor is Normal)", font=("Segoe UI", 8),
+                 fg="#64748b", bg="#1e293b").pack(anchor="w", pady=(0, 6))
+
+        # Dementia trigger status line
+        row_d_state = tk.Frame(self.stage2_card, bg="#1e293b")
+        row_d_state.pack(fill="x", pady=2)
+        tk.Label(row_d_state, text="Trigger Status:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
+        self.lbl_dementia_trigger = tk.Label(row_d_state, text="Standby", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", padx=6, pady=1)
+        self.lbl_dementia_trigger.pack(side="left")
+
+        # Category line
+        row_d = tk.Frame(self.stage2_card, bg="#1e293b")
+        row_d.pack(fill="x", pady=2)
+        tk.Label(row_d, text="Category:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
+        self.lbl_disease = tk.Label(row_d, text="--", font=("Segoe UI", 13, "bold"), fg="#f8fafc", bg="#1e293b")
+        self.lbl_disease.pack(side="left")
+
+        # Confidence line
+        row_c = tk.Frame(self.stage2_card, bg="#1e293b")
+        row_c.pack(fill="x", pady=2)
+        tk.Label(row_c, text="Confidence:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
+        self.lbl_conf = tk.Label(row_c, text="--%", font=("Segoe UI", 11, "bold"), fg="#fbbf24", bg="#1e293b")
+        self.lbl_conf.pack(side="left")
+
+        # Dementia Finding line
+        row_s = tk.Frame(self.stage2_card, bg="#1e293b")
+        row_s.pack(fill="x", pady=4)
+        tk.Label(row_s, text="Finding:", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", width=14, anchor="w").pack(side="left")
+        self.lbl_dementia_status = tk.Label(row_s, text="--", font=("Segoe UI", 10, "bold"), fg="#94a3b8", bg="#1e293b", padx=8, pady=2)
+        self.lbl_dementia_status.pack(side="left")
 
         # Quality warning banner (hidden by default)
         self.warn_frame = tk.Frame(self.scrollable_frame, bg="#451a03", padx=12, pady=6,
@@ -248,7 +256,7 @@ class CascadeMRIApp(tk.Tk):
                                         bg="#1e40af", fg="#ffffff", relief="flat", padx=6, pady=1,
                                         cursor="hand2", command=self._open_panel_view)
 
-        self.btn_toggle_cam = tk.Button(grad_header, text="Show Tumor CAM", font=("Segoe UI", 8, "bold"),
+        self.btn_toggle_cam = tk.Button(grad_header, text="View Dementia CAM", font=("Segoe UI", 8, "bold"),
                                         bg="#334155", fg="#f8fafc", relief="flat", padx=6, pady=1,
                                         cursor="hand2", command=self._toggle_gradcam_view)
 
@@ -273,10 +281,20 @@ class CascadeMRIApp(tk.Tk):
         tk.Label(metrics_card, text="Detailed Diagnostic Probability Distributions",
                  font=("Segoe UI", 12, "bold"), fg="#f8fafc", bg="#1e293b").pack(anchor="w", pady=(0, 8))
 
-        # Dementia Class probabilities grid
         probs_frame = tk.Frame(metrics_card, bg="#1e293b")
         probs_frame.pack(fill="x", pady=2)
 
+        # Stage 1 Brain Tumor Probability Row (Primary)
+        row_tumor_bar = tk.Frame(probs_frame, bg="#1e293b")
+        row_tumor_bar.pack(fill="x", pady=(2, 8))
+
+        tk.Label(row_tumor_bar, text="Stage 1: Brain Tumor Prob", font=("Segoe UI", 9, "bold"), fg="#c084fc", bg="#1e293b", width=24, anchor="w").pack(side="left")
+        self.pb_tumor = ttk.Progressbar(row_tumor_bar, orient="horizontal", mode="determinate", length=300, style="Tumor.Horizontal.TProgressbar")
+        self.pb_tumor.pack(side="left", padx=8)
+        self.lbl_tumor_meter = tk.Label(row_tumor_bar, text="--%", font=("Segoe UI", 9, "bold"), fg="#c084fc", bg="#1e293b", width=8, anchor="e")
+        self.lbl_tumor_meter.pack(side="left")
+
+        # Stage 2 Dementia Class probabilities grid
         self.prob_bars = {}
         self.prob_labels = {}
         classes = ["Non Demented", "Very mild Dementia", "Mild Dementia", "Moderate Dementia"]
@@ -285,25 +303,15 @@ class CascadeMRIApp(tk.Tk):
             row = tk.Frame(probs_frame, bg="#1e293b")
             row.pack(fill="x", pady=2)
 
-            tk.Label(row, text=f"Dementia: {cname}", font=("Segoe UI", 9), fg="#cbd5e1", bg="#1e293b", width=22, anchor="w").pack(side="left")
+            tk.Label(row, text=f"Stage 2: {cname}", font=("Segoe UI", 9), fg="#cbd5e1", bg="#1e293b", width=24, anchor="w").pack(side="left")
 
             pb = ttk.Progressbar(row, orient="horizontal", mode="determinate", length=300, style="TProgressbar")
             pb.pack(side="left", padx=8)
             self.prob_bars[cname] = pb
 
-            lbl_val = tk.Label(row, text="0.00%", font=("Segoe UI", 9, "bold"), fg="#38bdf8", bg="#1e293b", width=8, anchor="e")
+            lbl_val = tk.Label(row, text="--%", font=("Segoe UI", 9, "bold"), fg="#38bdf8", bg="#1e293b", width=8, anchor="e")
             lbl_val.pack(side="left")
             self.prob_labels[cname] = lbl_val
-
-        # Brain Tumor Probability Row
-        row_tumor_bar = tk.Frame(probs_frame, bg="#1e293b")
-        row_tumor_bar.pack(fill="x", pady=(8, 2))
-
-        tk.Label(row_tumor_bar, text="Reflex: Brain Tumor Prob", font=("Segoe UI", 9, "bold"), fg="#c084fc", bg="#1e293b", width=22, anchor="w").pack(side="left")
-        self.pb_tumor = ttk.Progressbar(row_tumor_bar, orient="horizontal", mode="determinate", length=300, style="Tumor.Horizontal.TProgressbar")
-        self.pb_tumor.pack(side="left", padx=8)
-        self.lbl_tumor_meter = tk.Label(row_tumor_bar, text="--%", font=("Segoe UI", 9, "bold"), fg="#c084fc", bg="#1e293b", width=8, anchor="e")
-        self.lbl_tumor_meter.pack(side="left")
 
         # Diagnostic Details Grid
         details_grid = tk.Frame(metrics_card, bg="#1e293b", pady=8)
@@ -318,7 +326,7 @@ class CascadeMRIApp(tk.Tk):
         self.lbl_calibration = tk.Label(details_grid, text="Temperature Calibration: Active", font=("Segoe UI", 9), fg="#94a3b8", bg="#1e293b")
         self.lbl_calibration.grid(row=1, column=0, sticky="w", padx=(0, 24), pady=2)
 
-        self.lbl_model_arch = tk.Label(details_grid, text="Models: EfficientNetV2-S + Custom CNN", font=("Segoe UI", 9), fg="#94a3b8", bg="#1e293b")
+        self.lbl_model_arch = tk.Label(details_grid, text="Models: Custom CNN + EfficientNetV2-S", font=("Segoe UI", 9), fg="#94a3b8", bg="#1e293b")
         self.lbl_model_arch.grid(row=1, column=1, sticky="w", padx=12, pady=2)
 
         # Protocol Disclaimer
@@ -326,22 +334,22 @@ class CascadeMRIApp(tk.Tk):
         disclaimer_frame.pack(fill="x", pady=(6, 12))
 
         tk.Label(disclaimer_frame,
-                 text="CASCADE PROTOCOL: Stage 1 evaluates Dementia severity. When Non-Demented (Normal), Stage 2 automatically screens for Brain Tumors. "
-                      "If Dementia is detected, Brain Tumor screening is bypassed. Research prototype; not a clinically validated standalone diagnostic device.",
+                 text="CASCADE PROTOCOL: Stage 1 screens for Brain Tumors. When No Tumor is detected (Normal), Stage 2 automatically evaluates Dementia severity. "
+                      "If a Brain Tumor is detected, Dementia screening is bypassed to prevent acute structural distortion from confounding subtle atrophy analysis. Research prototype; not a clinically validated standalone diagnostic device.",
                  font=("Segoe UI", 8, "italic"), fg="#93c5fd", bg="#172554", wraplength=980, justify="left").pack(anchor="w")
 
     def _load_models(self):
-        """Loads both Dementia and Brain Tumor models."""
+        """Loads both Brain Tumor and Dementia models."""
+        try:
+            self.tumor_detector = BrainTumorClassifier.get_instance()
+        except Exception as e:
+            print(f"Tumor detector warning: {e}")
+
         try:
             self.predictor = DementiaPredictor(self.checkpoint_path)
             self.lbl_calibration.config(text=f"Temperature Calibration: Active (T = {self.predictor.T:.3f})")
         except Exception as e:
             print(f"Dementia model warning: {e}")
-
-        try:
-            self.tumor_detector = BrainTumorClassifier.get_instance()
-        except Exception as e:
-            print(f"Tumor detector warning: {e}")
 
     def browse_file(self):
         fpath = filedialog.askopenfilename(
@@ -367,21 +375,26 @@ class CascadeMRIApp(tk.Tk):
             messagebox.showerror("File Not Found", f"The image path does not exist or is not a valid file:\n{clean_path}")
             return
 
-        if self.predictor is None:
-            messagebox.showwarning("Initializing", "Model is still loading. Please wait a moment.")
+        if self.tumor_detector is None:
+            messagebox.showwarning("Initializing", "Tumor screening model is still loading. Please wait a moment.")
             return
 
         self.analyze_btn.config(state="disabled", text="Analyzing...")
         self.lbl_overall.config(text="Running Cascade Diagnostic Analysis...", fg="#38bdf8")
-        self.lbl_disease.config(text="Analyzing Stage 1...", fg="#38bdf8")
-        self.lbl_tumor_trigger.config(text="Pending Stage 1...", fg="#94a3b8", bg="#1e293b")
+        self.lbl_tumor_res.config(text="Screening Stage 1...", fg="#38bdf8")
+        self.lbl_tumor_prob.config(text="--%", fg="#fbbf24")
+        self.lbl_tumor_status.config(text="Analyzing...", fg="#38bdf8", bg="#1e293b")
+        self.lbl_dementia_trigger.config(text="Pending Stage 1...", fg="#94a3b8", bg="#1e293b")
+        self.lbl_disease.config(text="--", fg="#f8fafc")
+        self.lbl_conf.config(text="--%", fg="#fbbf24")
+        self.lbl_dementia_status.config(text="--", fg="#94a3b8", bg="#1e293b")
         self.update_idletasks()
 
         # Run inference in worker thread
         threading.Thread(target=self._worker_cascade, args=(p,), daemon=True).start()
 
     def _worker_cascade(self, p):
-        """Worker executing Dementia analysis and conditionally executing Brain Tumor screening."""
+        """Worker executing Brain Tumor screening first, then conditionally Dementia analysis."""
         import time
         t0 = time.time()
         try:
@@ -390,21 +403,22 @@ class CascadeMRIApp(tk.Tk):
             out_dir = ROOT / "predictions" / safe_folder
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            # Stage 1: Dementia Analysis
-            dementia_res = self.predictor.predict(p, gradcam_dir=out_dir, mc_passes=0, multi_layer=True)
+            # Stage 1: Brain Tumor Screening
+            if self.tumor_detector is None:
+                self.tumor_detector = BrainTumorClassifier.get_instance()
+            tumor_res = self.tumor_detector.predict(p, out_dir=out_dir)
+            has_tumor = tumor_res["has_tumor"]
 
-            tumor_res = None
-            is_normal_dementia = (dementia_res["prediction"] == "Non Demented")
-
-            # Stage 2: Reflex Brain Tumor screening ONLY if Dementia is Normal (Non Demented)
-            if is_normal_dementia:
-                if self.tumor_detector is None:
-                    self.tumor_detector = BrainTumorClassifier.get_instance()
-                tumor_res = self.tumor_detector.predict(p, out_dir=out_dir)
+            dementia_res = None
+            # Stage 2: Reflex Dementia assessment ONLY if Brain Tumor is Normal (No tumor)
+            if not has_tumor:
+                if self.predictor is None:
+                    self.predictor = DementiaPredictor(self.checkpoint_path)
+                dementia_res = self.predictor.predict(p, gradcam_dir=out_dir, mc_passes=0, multi_layer=True)
 
             total_ms = (time.time() - t0) * 1000
 
-            self.msg_queue.put(("SUCCESS", (p, dementia_res, tumor_res, total_ms)))
+            self.msg_queue.put(("SUCCESS", (p, tumor_res, dementia_res, total_ms)))
         except Exception as exc:
             import traceback
             traceback.print_exc()
@@ -415,8 +429,8 @@ class CascadeMRIApp(tk.Tk):
             while True:
                 msg_type, payload = self.msg_queue.get_nowait()
                 if msg_type == "SUCCESS":
-                    p, dementia_res, tumor_res, total_ms = payload
-                    self._update_ui_cascade(p, dementia_res, tumor_res, total_ms)
+                    p, tumor_res, dementia_res, total_ms = payload
+                    self._update_ui_cascade(p, tumor_res, dementia_res, total_ms)
                     self.analyze_btn.config(state="normal", text="Run Cascade Diagnosis")
                 elif msg_type == "ERROR":
                     messagebox.showerror("Diagnostic Error", f"Error during analysis:\n{payload}")
@@ -427,103 +441,124 @@ class CascadeMRIApp(tk.Tk):
 
         self.after(50, self._poll_queue)
 
-    def _update_ui_cascade(self, img_path, d_res, t_res, total_ms):
-        disease = d_res["prediction"]
-        conf = d_res["confidence"] * 100.0
-        is_normal_dementia = (disease == "Non Demented")
+    def _update_ui_cascade(self, img_path, t_res, d_res, total_ms):
+        has_tumor = t_res["has_tumor"]
+        tumor_prob = t_res["probability"] * 100.0
 
-        # 1. Update Stage 1 Dementia UI
-        self.lbl_disease.config(text=disease)
-        self.lbl_conf.config(text=f"{conf:.2f}% (Calibrated)")
+        # 1. Update Stage 1 Brain Tumor UI
+        self.pb_tumor["value"] = tumor_prob
+        self.lbl_tumor_meter.config(text=f"{tumor_prob:.2f}%")
 
-        if is_normal_dementia:
-            self.lbl_status.config(text="NORMAL (Non-Demented)", fg="#10b981", bg="#064e3b")
-        else:
-            self.lbl_status.config(text=f"ABNORMAL ({disease})", fg="#ef4444", bg="#450a0a")
+        self.active_tumor_gradcam = t_res.get("gradcam_overlay")
+        self.active_tumor_panel = t_res.get("gradcam_panel")
 
-        # 2. Update Stage 2 Brain Tumor UI based on cascade rule
-        self.active_dementia_gradcam = d_res.get("gradcam")
-        self.active_tumor_gradcam = None
+        if has_tumor:
+            self.lbl_tumor_res.config(text="BRAIN TUMOR DETECTED (YES)", fg="#ef4444")
+            self.lbl_tumor_prob.config(text=f"{tumor_prob:.2f}% (High Confidence)", fg="#ef4444")
+            self.lbl_tumor_status.config(text="ABNORMAL (Brain Tumor Detected)", fg="#ef4444", bg="#450a0a")
 
-        if not is_normal_dementia:
-            # Dementia Detected -> Skip Brain Tumor Check
-            self.lbl_tumor_trigger.config(
-                text="SKIPPED (Dementia Detected)",
+            # Stage 2 Dementia was bypassed
+            self.lbl_dementia_trigger.config(
+                text="SKIPPED (Brain Tumor Detected)",
                 fg="#94a3b8", bg="#1e293b"
             )
-            self.lbl_tumor_res.config(text="Reflex Check Bypassed", fg="#64748b")
-            self.lbl_tumor_prob.config(text="N/A", fg="#64748b")
-            self.pb_tumor["value"] = 0
-            self.lbl_tumor_meter.config(text="N/A (Bypassed)", fg="#64748b")
+            self.lbl_disease.config(text="Reflex Check Bypassed", fg="#64748b")
+            self.lbl_conf.config(text="N/A", fg="#64748b")
+            self.lbl_dementia_status.config(text="BYPASSED (Gross Lesion Present)", fg="#64748b", bg="#1e293b")
 
-            # Overall diagnosis
+            # Overall banner
             self.overall_banner.config(highlightbackground="#ef4444")
             self.lbl_overall.config(
-                text=f"ABNORMAL: Dementia Identified ({disease}) | Brain Tumor Check Bypassed",
+                text=f"ABNORMAL: Brain Tumor Detected ({tumor_prob:.2f}%) | Dementia Assessment Bypassed",
                 fg="#f87171"
             )
+
+            # Reset dementia probability bars
+            for cname in self.prob_bars:
+                self.prob_bars[cname]["value"] = 0
+                self.prob_labels[cname].config(text="--%")
+
+            self.lbl_uncertainty.config(text="Dementia Uncertainty: N/A (Bypassed)")
+
+            # Set tumor Grad-CAM as primary
+            self.active_dementia_gradcam = None
+            self.current_shown_gradcam = "tumor"
+            self._set_gradcam_display(self.active_tumor_gradcam, "Multi-Layer Fused Brain Tumor Localization (5 Layers)")
             self.btn_toggle_cam.pack_forget()
-            self._set_gradcam_display(self.active_dementia_gradcam, "Dementia Multi-Layer Attention Map")
+            if self.active_tumor_panel:
+                self.btn_open_panel.pack(side="right", padx=(0, 6))
 
         else:
-            # Normal for Dementia -> Stage 2 Reflex Brain Tumor check was executed!
-            has_tumor = t_res["has_tumor"]
-            tumor_prob = t_res["probability"] * 100.0
-            self.active_tumor_gradcam = t_res.get("gradcam_overlay")
-            self.active_tumor_panel = t_res.get("gradcam_panel")
+            # Tumor is Normal -> Stage 2 Reflex Dementia check was executed
+            self.lbl_tumor_res.config(text="NO BRAIN TUMOR (NORMAL BRAIN)", fg="#10b981")
+            self.lbl_tumor_prob.config(text=f"{tumor_prob:.2f}% (Normal Brain)", fg="#10b981")
+            self.lbl_tumor_status.config(text="NORMAL (No Tumor Detected)", fg="#10b981", bg="#064e3b")
 
-            self.lbl_tumor_trigger.config(
-                text="TRIGGERED (Dementia Normal)",
+            self.lbl_dementia_trigger.config(
+                text="TRIGGERED (Tumor Normal)",
                 fg="#38bdf8", bg="#0c4a6e"
             )
-            self.pb_tumor["value"] = tumor_prob
-            self.lbl_tumor_meter.config(text=f"{tumor_prob:.2f}%")
 
-            if has_tumor:
-                self.lbl_tumor_res.config(text="BRAIN TUMOR DETECTED (YES)", fg="#ef4444")
-                self.lbl_tumor_prob.config(text=f"{tumor_prob:.2f}% (High Confidence)", fg="#ef4444")
+            disease = d_res["prediction"]
+            conf = d_res["confidence"] * 100.0
+            is_normal_dementia = (disease == "Non Demented")
 
-                self.overall_banner.config(highlightbackground="#ef4444")
-                self.lbl_overall.config(
-                    text="ABNORMAL: Dementia Normal ➔ BRAIN TUMOR DETECTED (Stage 2 Reflex Positive)",
-                    fg="#f87171"
-                )
-                # Show Multi-Layer Tumor CAM by default if tumor detected
-                self._set_gradcam_display(self.active_tumor_gradcam, "Multi-Layer Fused Brain Tumor Localization (5 Layers)")
-                self.current_shown_gradcam = "tumor"
-                self.btn_toggle_cam.config(text="View Dementia CAM")
-                self.btn_toggle_cam.pack(side="right")
-                if self.active_tumor_panel:
-                    self.btn_open_panel.pack(side="right", padx=(0, 6))
-            else:
-                self.lbl_tumor_res.config(text="NO BRAIN TUMOR (NORMAL BRAIN)", fg="#10b981")
-                self.lbl_tumor_prob.config(text=f"{tumor_prob:.2f}% (Normal Brain)", fg="#10b981")
+            self.lbl_disease.config(text=disease, fg="#f8fafc")
+            self.lbl_conf.config(text=f"{conf:.2f}% (Calibrated)", fg="#fbbf24")
 
+            self.active_dementia_gradcam = d_res.get("gradcam")
+
+            if is_normal_dementia:
+                self.lbl_dementia_status.config(text="NORMAL (Non-Demented)", fg="#10b981", bg="#064e3b")
                 self.overall_banner.config(highlightbackground="#10b981")
                 self.lbl_overall.config(
-                    text="ALL CLEAR: No Dementia Detected & No Brain Tumor Detected (Normal MRI)",
+                    text="ALL CLEAR: No Brain Tumor Detected & No Dementia Detected (Normal Brain MRI)",
                     fg="#34d399"
                 )
-                self._set_gradcam_display(self.active_dementia_gradcam, "Dementia Multi-Layer Attention Map")
-                self.current_shown_gradcam = "dementia"
-                if self.active_tumor_gradcam:
-                    self.btn_toggle_cam.config(text="View Tumor CAM")
-                    self.btn_toggle_cam.pack(side="right")
-                    if self.active_tumor_panel:
-                        self.btn_open_panel.pack(side="right", padx=(0, 6))
-                else:
-                    self.btn_toggle_cam.pack_forget()
-                    self.btn_open_panel.pack_forget()
+            else:
+                self.lbl_dementia_status.config(text=f"ABNORMAL ({disease})", fg="#ef4444", bg="#450a0a")
+                self.overall_banner.config(highlightbackground="#ef4444")
+                self.lbl_overall.config(
+                    text=f"ABNORMAL: Brain Tumor Normal ➔ Dementia Identified ({disease})",
+                    fg="#f87171"
+                )
 
-        # 3. Quality warnings
-        warnings = d_res.get("image_quality_warnings", [])
+            # Update Dementia Probabilities bars
+            probs = d_res["probabilities"]
+            for cname, pval in probs.items():
+                if cname in self.prob_bars:
+                    pct = pval * 100.0
+                    self.prob_bars[cname]["value"] = pct
+                    self.prob_labels[cname].config(text=f"{pct:.2f}%")
+
+            unc_val = d_res.get("uncertainty", 0.0)
+            unc_stat = d_res.get("uncertainty_status", "N/A")
+            self.lbl_uncertainty.config(text=f"Dementia Uncertainty: {unc_val:.2f} ({unc_stat})")
+
+            # Show Dementia Grad-CAM by default
+            self._set_gradcam_display(self.active_dementia_gradcam, "Dementia Multi-Layer Attention Map")
+            self.current_shown_gradcam = "dementia"
+
+            if self.active_tumor_gradcam:
+                self.btn_toggle_cam.config(text="View Tumor CAM")
+                self.btn_toggle_cam.pack(side="right")
+            else:
+                self.btn_toggle_cam.pack_forget()
+
+            if self.active_tumor_panel:
+                self.btn_open_panel.pack(side="right", padx=(0, 6))
+            else:
+                self.btn_open_panel.pack_forget()
+
+        # Quality warnings
+        warnings = d_res.get("image_quality_warnings", []) if d_res else []
         if warnings:
             self.lbl_warning.config(text="Image Quality Advisory: " + "; ".join(warnings))
             self.warn_frame.pack(fill="x", pady=4, before=self.card_orig.master)
         else:
             self.warn_frame.pack_forget()
 
-        # 4. Display Input MRI Image
+        # Display Input MRI Image
         try:
             orig_pil = Image.open(img_path).convert("RGB")
             orig_pil = orig_pil.resize((280, 280), Image.Resampling.LANCZOS)
@@ -533,19 +568,7 @@ class CascadeMRIApp(tk.Tk):
         except Exception as e:
             self.canvas_orig.config(text=f"Failed to display input image:\n{e}", image="", width=0, height=0)
 
-        # 5. Update Dementia Probabilities bars
-        probs = d_res["probabilities"]
-        for cname, pval in probs.items():
-            if cname in self.prob_bars:
-                pct = pval * 100.0
-                self.prob_bars[cname]["value"] = pct
-                self.prob_labels[cname].config(text=f"{pct:.2f}%")
-
-        unc_val = d_res.get("uncertainty", 0.0)
-        unc_stat = d_res.get("uncertainty_status", "N/A")
-        self.lbl_uncertainty.config(text=f"Dementia Uncertainty: {unc_val:.2f} ({unc_stat})")
         self.lbl_latency.config(text=f"Total Latency: {total_ms:.0f} ms")
-
         self.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
@@ -582,7 +605,7 @@ class CascadeMRIApp(tk.Tk):
             self.current_shown_gradcam = "tumor"
             self.btn_toggle_cam.config(text="View Dementia CAM")
             self._set_gradcam_display(self.active_tumor_gradcam, "Multi-Layer Fused Brain Tumor Localization (5 Layers)")
-        else:
+        elif self.active_dementia_gradcam:
             self.current_shown_gradcam = "dementia"
             self.btn_toggle_cam.config(text="View Tumor CAM")
             self._set_gradcam_display(self.active_dementia_gradcam, "Dementia Multi-Layer Attention Map")

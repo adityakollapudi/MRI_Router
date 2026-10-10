@@ -1,8 +1,12 @@
 #!/usr/bin/env python
-"""Single-image inference for the Dementia MRI research prototype.
+"""Single-image inference for Cascade Brain MRI Diagnosis.
 
+Stage 1: Brain Tumor Screening (Custom CNN with Multi-Layer Grad-CAM)
+Stage 2: Reflex Dementia Assessment (EfficientNetV2-S) - triggered ONLY if Stage 1 is Normal (No Tumor).
+
+Usage:
     python predict.py --image /path/to/mri.jpg
-    python predict.py --image mri.jpg --checkpoint checkpoints/best_model.pth --mc-dropout 20 --target-class "Mild Dementia"
+    python predict.py --image mri.jpg --checkpoint checkpoints/best_model.pth
 
 Outputs a console report, prediction.json and Grad-CAM images. Not a diagnostic device.
 """
@@ -14,10 +18,11 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from src.inference import DementiaPredictor, format_report, save_prediction_json  # noqa: E402
+from src.tumor_detector import BrainTumorClassifier  # noqa: E402
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Dementia MRI category prediction (research prototype)")
+    ap = argparse.ArgumentParser(description="Cascade Brain MRI Diagnosis (Tumor Screener & Reflex Dementia Classifier)")
     ap.add_argument("--image", default=None, help="brain MRI slice (JPG/PNG)")
     ap.add_argument("--checkpoint", default=str(ROOT / "checkpoints" / "best_model.pth"))
     ap.add_argument("--meta", default=None, help="inference_meta.json (temperature, thresholds); default: next to checkpoint")
@@ -40,58 +45,72 @@ def main():
     img = Path(image_path_str)
     if not img.exists():
         sys.exit(f"Image not found: {img}")
-    ckpt = Path(a.checkpoint)
-    if not ckpt.exists():
-        print(f"Default checkpoint not found at: {ckpt}")
-        try:
-            custom_ckpt = input("Enter checkpoint path (or press Enter to abort): ").strip().strip('"\'')
-            if custom_ckpt:
-                ckpt = Path(custom_ckpt)
-        except (KeyboardInterrupt, EOFError):
-            sys.exit("\nAborted.")
-        if not ckpt.exists():
-            sys.exit(f"Checkpoint not found: {ckpt} (train the model first or pass --checkpoint)")
+
     out = Path(a.output_dir) / img.stem
     out.mkdir(parents=True, exist_ok=True)
-    p = DementiaPredictor(ckpt, a.meta)
-    if a.target_class and a.target_class not in p.classes:
-        sys.exit(f"--target-class must be one of {p.classes}")
-    r = p.predict(img, gradcam_dir=None if a.no_gradcam else out, target_class=a.target_class,
-                  mc_passes=a.mc_dropout, multi_layer=not a.single_layer)
-    print(format_report(r))
-    js = save_prediction_json(r, out / "prediction.json")
-    print(f"\nprediction.json -> {js}")
 
-    # Stage 2: Reflex Brain Tumor Check if Dementia is Normal (Non Demented)
-    gradcam_file = r.get("gradcam_panel") or r.get("gradcam")
-    if r["prediction"] == "Non Demented":
-        print("\n" + "=" * 60)
-        print("STAGE 2: REFLEX BRAIN TUMOR SCREENING (Triggered: Dementia Normal)")
-        print("=" * 60)
-        try:
-            from src.tumor_detector import BrainTumorClassifier
-            btc = BrainTumorClassifier.get_instance()
-            t_res = btc.predict(img, out_dir=out)
-            prob_pct = t_res["probability"] * 100.0
-            print(f"Tumor Finding:     {t_res['label']}")
-            print(f"Tumor Probability: {prob_pct:.2f}%")
-            if t_res.get("layers_fused"):
-                print(f"Layers Fused:      {', '.join(t_res['layers_fused'])}")
-            if t_res.get("gradcam_panel"):
-                print(f"Diagnostic Panel:  {t_res['gradcam_panel']}")
-            if t_res["has_tumor"]:
-                print("Consolidated:      ABNORMAL (Dementia Normal | BRAIN TUMOR DETECTED)")
-                if t_res.get("gradcam_panel"):
-                    gradcam_file = t_res["gradcam_panel"]
-                elif t_res.get("gradcam_overlay"):
-                    gradcam_file = t_res["gradcam_overlay"]
-            else:
-                print("Consolidated:      ALL CLEAR (No Dementia & No Brain Tumor Detected)")
-        except Exception as te:
-            print(f"Warning: Brain tumor screening could not run: {te}")
-        print("=" * 60)
+    # -------------------------------------------------------------
+    # STAGE 1: BRAIN TUMOR SCREENING (Primary)
+    # -------------------------------------------------------------
+    print("\n" + "=" * 65)
+    print("STAGE 1: BRAIN TUMOR SCREENING (Primary Screener)")
+    print("=" * 65)
+
+    btc = BrainTumorClassifier.get_instance()
+    t_res = btc.predict(img, out_dir=None if a.no_gradcam else out)
+    prob_pct = t_res["probability"] * 100.0
+    print(f"Tumor Finding:     {t_res['label']}")
+    print(f"Tumor Probability: {prob_pct:.2f}%")
+    if t_res.get("layers_fused"):
+        print(f"Layers Fused:      {', '.join(t_res['layers_fused'])}")
+    if t_res.get("gradcam_overlay"):
+        print(f"Tumor Grad-CAM:    {t_res['gradcam_overlay']}")
+    if t_res.get("gradcam_panel"):
+        print(f"Diagnostic Panel:  {t_res['gradcam_panel']}")
+
+    gradcam_file = t_res.get("gradcam_panel") or t_res.get("gradcam_overlay")
+
+    if t_res["has_tumor"]:
+        print("\n" + "-" * 65)
+        print("Consolidated:      ABNORMAL (Stage 1: BRAIN TUMOR DETECTED)")
+        print("[Protocol Note] Brain Tumor detected: Stage 2 Dementia assessment bypassed.")
+        print("-" * 65)
     else:
-        print("\n[Protocol Note] Dementia detected: Stage 2 Brain Tumor screening bypassed.")
+        # -------------------------------------------------------------
+        # STAGE 2: REFLEX DEMENTIA ASSESSMENT (Triggered if Tumor is Normal)
+        # -------------------------------------------------------------
+        print("\n" + "=" * 65)
+        print("STAGE 2: REFLEX DEMENTIA ASSESSMENT (Triggered: Tumor Normal)")
+        print("=" * 65)
+
+        ckpt = Path(a.checkpoint)
+        if not ckpt.exists():
+            print(f"Default checkpoint not found at: {ckpt}")
+            try:
+                custom_ckpt = input("Enter checkpoint path (or press Enter to abort): ").strip().strip('"\'')
+                if custom_ckpt:
+                    ckpt = Path(custom_ckpt)
+            except (KeyboardInterrupt, EOFError):
+                sys.exit("\nAborted.")
+            if not ckpt.exists():
+                sys.exit(f"Checkpoint not found: {ckpt} (train the model first or pass --checkpoint)")
+
+        p = DementiaPredictor(ckpt, a.meta)
+        if a.target_class and a.target_class not in p.classes:
+            sys.exit(f"--target-class must be one of {p.classes}")
+
+        r = p.predict(img, gradcam_dir=None if a.no_gradcam else out, target_class=a.target_class,
+                      mc_passes=a.mc_dropout, multi_layer=not a.single_layer)
+        print(format_report(r))
+        js = save_prediction_json(r, out / "prediction.json")
+        print(f"\nprediction.json -> {js}")
+
+        if r["prediction"] == "Non Demented":
+            print("\nConsolidated:      ALL CLEAR (No Brain Tumor & No Dementia Detected)")
+        else:
+            print(f"\nConsolidated:      ABNORMAL (Tumor Normal | Dementia Detected: {r['prediction']})")
+
+        gradcam_file = r.get("gradcam_panel") or r.get("gradcam") or gradcam_file
 
     # Automatically pop up the Grad-CAM visualization window/viewer
     if gradcam_file and Path(gradcam_file).exists():
@@ -99,7 +118,7 @@ def main():
             import os
             print(f"\nOpening visual output popup: {gradcam_file}")
             os.startfile(gradcam_file)
-        except Exception as e:
+        except Exception:
             try:
                 from PIL import Image
                 Image.open(gradcam_file).show()

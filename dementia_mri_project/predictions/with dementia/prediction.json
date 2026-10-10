@@ -24,7 +24,7 @@
     ],
     "temperature_calibrated": true,
     "temperature": 2.876306700558039,
-    "inference_ms": 146.7299461364746,
+    "inference_ms": 90.90137481689453,
     "image_quality_ok": true,
     "image_quality_warnings": [],
     "image": "with dementia.jpeg",

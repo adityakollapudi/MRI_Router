@@ -1,8 +1,8 @@
 # MRI Router: Cascade Brain MRI Diagnosis System
 
 A comprehensive deep learning diagnostic system for brain MRI slice analysis. The router implements a clinically motivated **Two-Stage Cascade Architecture**:
-1. **Stage 1 (Primary - Dementia Severity Assessment)**: Evaluates brain scans using **EfficientNetV2-S** for dataset-defined dementia categories (*Non Demented*, *Very mild Dementia*, *Mild Dementia*, *Moderate Dementia*).
-2. **Stage 2 (Reflex - Brain Tumor Screening)**: Triggered **ONLY** when Stage 1 indicates a normal brain (*Non Demented*). If dementia pathology is identified, tumor screening is bypassed as per cascade protocol. Includes **5-layer gradient-fused Grad-CAM** localization.
+1. **Stage 1 (Primary - Brain Tumor Screening)**: Evaluates brain scans using a **Custom 5-Layer CNN** with **5-layer gradient-fused Grad-CAM** (`conv0`, `bn0`, `activation`, `max_pool0`, `max_pool1`) for acute intracranial mass / tumor screening.
+2. **Stage 2 (Reflex - Dementia Severity Assessment)**: Triggered **ONLY** when Stage 1 indicates a normal brain (*No Tumor Detected*). If a brain tumor is detected, dementia assessment is bypassed to prevent gross mass effect and edema from confounding subtle cortical atrophy evaluation. Evaluates categories (*Non Demented*, *Very mild Dementia*, *Mild Dementia*, *Moderate Dementia*) using **EfficientNetV2-S**.
 
 ---
 
@@ -12,19 +12,19 @@ A comprehensive deep learning diagnostic system for brain MRI slice analysis. Th
                       [Input Brain MRI Slice]
                                  │
                                  ▼
-                 Stage 1: Dementia Model (EfficientNetV2-S)
+                 Stage 1: Brain Tumor Screener (CNN)
                                  │
                ┌─────────────────┴─────────────────┐
                ▼                                   ▼
-      [Dementia Detected]                 [Non-Demented (Normal)]
+      [Tumor Detected (YES)]               [No Tumor (Normal)]
                │                                   │
-               │ (Primary diagnosis confirmed)     ▼
-               ▼                         Stage 2: Brain Tumor CNN
+               │ (Acute pathology identified)      ▼
+               ▼                     Stage 2: Dementia Model (EfficientNetV2-S)
         Stage 2 Bypassed                           │
-        (Screening Skipped)                ┌───────┴───────┐
+       (Screening Skipped)                 ┌───────┴───────┐
                                            ▼               ▼
-                                    [Tumor Positive] [Tumor Negative]
-                                     (Multi-Layer CAM) (Normal Brain)
+                                   [Dementia Detected] [Non-Demented]
+                                   (Very Mild / Mild)  (Normal Brain)
 ```
 
 ---
@@ -57,16 +57,16 @@ MRI_Router/
 ├── with dementia.jpeg          # Sample MRI scan (Dementia positive)
 ├── with out dementia.jpeg      # Sample MRI scan (Dementia negative)
 │
-├── dementia_mri_project/       # Stage 1: Dementia classification system
+├── dementia_mri_project/       # Dementia classification components
 │   ├── checkpoints/            # Trained model weights (best_model.pth)
 │   ├── src/                    # Data pipeline, training & inference code
 │   │   ├── gui.py              # Cascade GUI implementation
-│   │   ├── inference.py        # Stage 1 inference engine
-│   │   ├── tumor_detector.py   # Stage 2 PyTorch reflex engine
+│   │   ├── inference.py        # Dementia inference engine
+│   │   ├── tumor_detector.py   # Stage 1 PyTorch screening engine
 │   │   └── ...
 │   └── predictions/            # Generated Grad-CAM heatmaps & JSON outputs
 │
-└── brain-_tumor_detection/     # Stage 2: Brain Tumor detection components
+└── brain-_tumor_detection/     # Brain Tumor detection components
     ├── models/                 # Pretrained weights (.h5 / .model)
     ├── gradcam.py              # Multi-layer Grad-CAM algorithm
     └── ...
@@ -75,5 +75,5 @@ MRI_Router/
 ---
 
 ## Explainable AI (XAI)
-- **Stage 1**: Multi-layer Grad-CAM for cortical atrophy and dementia patterns.
-- **Stage 2**: 5-layer gradient-fused Grad-CAM (`conv0`, `bn0`, `activation`, `max_pool0`, `max_pool1`) with pre-sigmoid logit backpropagation and anatomical skull masking.
+- **Stage 1**: 5-layer gradient-fused Grad-CAM (`conv0`, `bn0`, `activation`, `max_pool0`, `max_pool1`) with pre-sigmoid logit backpropagation and anatomical skull masking.
+- **Stage 2**: Multi-layer Grad-CAM for cortical atrophy and dementia patterns.

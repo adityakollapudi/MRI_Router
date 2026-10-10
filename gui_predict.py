@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Global Entry Point: Cascade Brain MRI Diagnosis GUI Window.
 
-Stage 1: Dementia Severity Classification (EfficientNetV2-S)
-Stage 2: Reflex Brain Tumor Screening (CNN with Multi-Layer Grad-CAM)
-         - Automatically triggered ONLY when Dementia is Normal (Non-Demented)
-         - Bypassed when Dementia is detected
+Stage 1: Brain Tumor Screening (Custom CNN with Multi-Layer Grad-CAM)
+Stage 2: Reflex Dementia Assessment (EfficientNetV2-S)
+         - Automatically triggered ONLY when Brain Tumor is Normal (No Tumor)
+         - Bypassed when Brain Tumor is detected
 
 Usage:
     python gui_predict.py
